@@ -87,6 +87,7 @@ struct State {
     XrTime         predictedTime = 0;
     XrDuration     predictedPeriod = 11111111;
     bool           fatal = false;
+    bool           initGateLogged = false;
     uint64_t       nextInitAttempt = 0;
 
     DXGI_FORMAT    chainFormat = DXGI_FORMAT_UNKNOWN;
@@ -929,14 +930,23 @@ void DumpBackbuffer(ID3D12Resource* bb, int eye)
 
 bool TryInit()
 {
-    if (S.fatal || !S.device || !S.queue) return false;
+    if (S.fatal || !S.device || !S.queue) {
+        if (!S.initGateLogged) {
+            Log("OpenXR init blocked: fatal=%d device=%p queue=%p", S.fatal ? 1 : 0, S.device, S.queue);
+            S.initGateLogged = true;
+        }
+        return false;
+    }
     if (S.presentCount < S.nextInitAttempt) return false;
     S.nextInitAttempt = S.presentCount + 300;
+    Log("OpenXR init attempt at Present %llu (instance=%p session=%p)",
+        (unsigned long long)S.presentCount, S.instance, S.session);
     if (!InitGpu()) {
         Log("GPU objects could not be created");
         S.fatal = true;
         return false;
     }
+    Log("OpenXR GPU objects ready");
     if (!S.instance && !InitInstance()) return false;
     if (!S.session && !InitSession()) {
         if (S.session) DestroySession();
@@ -1459,6 +1469,7 @@ void OnPostPresent()
     }
     S.tPresentStart.QuadPart = 0;
     S.presentCount++;
+    if (S.presentCount == 1) Log("DXGI post-present callback reached");
     S.cur.wait = 0;
     if (S.running && !S.async) BeginFrame();
     prof::EndFrame(S.curFrame, S.cur);
