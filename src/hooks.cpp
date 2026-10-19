@@ -37,6 +37,8 @@ PFN_ResizeBuffers          o_ResizeBuffers = nullptr;
 PFN_ResizeBuffers1         o_ResizeBuffers1 = nullptr;
 
 thread_local int t_inPresent = 0;  // Present1 may call Present internally on some runtimes
+static volatile LONG g_loggedPresent = 0;
+static volatile LONG g_loggedPresent1 = 0;
 
 bool PatchPointer(void** slot, void* value, void** original)
 {
@@ -54,6 +56,8 @@ UINT SyncInterval(UINT requested) { return g_config.forceNoVsync ? 0 : requested
 HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* self, UINT sync, UINT flags)
 {
     if (t_inPresent || (flags & DXGI_PRESENT_TEST)) return o_Present(self, sync, flags);
+    if (InterlockedCompareExchange(&g_loggedPresent, 1, 0) == 0)
+        Log("DXGI Present hook reached");
     t_inPresent++;
     vr::OnPresent(self);
     HRESULT hr = o_Present(self, SyncInterval(sync), flags);
@@ -66,6 +70,8 @@ HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain1* self, UINT sync, UINT f
                                         const DXGI_PRESENT_PARAMETERS* params)
 {
     if (t_inPresent || (flags & DXGI_PRESENT_TEST)) return o_Present1(self, sync, flags, params);
+    if (InterlockedCompareExchange(&g_loggedPresent1, 1, 0) == 0)
+        Log("DXGI Present1 hook reached");
     t_inPresent++;
     vr::OnPresent(self);
     HRESULT hr = o_Present1(self, SyncInterval(sync), flags, params);
@@ -129,10 +135,12 @@ void HookSwapChain(IUnknown* queueOrDevice, IUnknown* swapUnk)
         return;
     }
     void** vt = *(void***)sc;
-    PatchPointer(&vt[8], (void*)Hook_Present, (void**)&o_Present);
-    PatchPointer(&vt[13], (void*)Hook_ResizeBuffers, (void**)&o_ResizeBuffers);
-    PatchPointer(&vt[22], (void*)Hook_Present1, (void**)&o_Present1);
-    PatchPointer(&vt[39], (void*)Hook_ResizeBuffers1, (void**)&o_ResizeBuffers1);
+    bool hookPresent = PatchPointer(&vt[8], (void*)Hook_Present, (void**)&o_Present);
+    bool hookResize = PatchPointer(&vt[13], (void*)Hook_ResizeBuffers, (void**)&o_ResizeBuffers);
+    bool hookPresent1 = PatchPointer(&vt[22], (void*)Hook_Present1, (void**)&o_Present1);
+    bool hookResize1 = PatchPointer(&vt[39], (void*)Hook_ResizeBuffers1, (void**)&o_ResizeBuffers1);
+    Log("swap chain hooks: Present=%d Resize=%d Present1=%d Resize1=%d",
+        hookPresent, hookResize, hookPresent1, hookResize1);
 
     ID3D12CommandQueue* queue = nullptr;
     if (queueOrDevice && SUCCEEDED(queueOrDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
