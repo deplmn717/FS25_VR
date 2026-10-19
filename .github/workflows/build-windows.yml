@@ -1,0 +1,49 @@
+name: Build Windows VR prototype
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenXR loader via vcpkg
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP/vcpkg"
+          & "$env:RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:RUNNER_TEMP/vcpkg/vcpkg.exe" install openxr-loader:x64-windows
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
+      - name: Compile
+        run: cmake --build build --config Release --parallel
+      - name: Stage complete install package
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "artifact\package"
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage "x64"), (Join-Path $stage "mod"), "artifact" | Out-Null
+
+          $loader = Join-Path $env:RUNNER_TEMP "vcpkg\installed\x64-windows\bin\openxr_loader.dll"
+          if (-not (Test-Path $loader)) { throw "OpenXR loader DLL missing: $loader" }
+
+          Copy-Item "build/Release/dinput8.dll" (Join-Path $stage "x64")
+          Copy-Item $loader (Join-Path $stage "x64")
+          Copy-Item "dist/fs25vr.ini" (Join-Path $stage "x64")
+          Copy-Item "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "install.ps1", "install.sh" $stage
+          Copy-Item "dist/release/*" $stage
+          Compress-Archive -Path "mod/FS25_VR/*" -DestinationPath (Join-Path $stage "mod/FS25_VR.zip") -Force
+
+          $xrLicense = Join-Path $env:RUNNER_TEMP "vcpkg\installed\x64-windows\share\openxr-loader\copyright"
+          if (-not (Test-Path $xrLicense)) { throw "OpenXR license file missing: $xrLicense" }
+          Copy-Item $xrLicense (Join-Path $stage "LICENSE-openxr-loader.txt")
+
+          $package = "artifact/FS25-NativeVR-Windows-prototype.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $package -Force
+          Get-ChildItem $stage -Recurse -File | Select-Object FullName, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FS25-NativeVR-Windows-prototype
+          path: artifact/FS25-NativeVR-Windows-prototype.zip
